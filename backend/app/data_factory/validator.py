@@ -1,9 +1,14 @@
+"""Rigorous validation for Synthetic Data Factory: counts, foreign keys, partition disjointness,
+synthetic watermarks, zero-PHI regex scans, clinical temporal coherence, and normalized-to-FHIR parity."""
+
+import hashlib
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from typing import Any
 
 from backend.app.data_factory.config import DataFactoryProfile
+from backend.app.data_factory.generators.clinical import GeneratedClinicalResult
 from backend.app.data_factory.generators.organizations import GeneratedOrganizationsResult
 from backend.app.db.models import Coverage, Patient
 
@@ -27,11 +32,12 @@ def validate_dataset(
     org_res: GeneratedOrganizationsResult,
     patients: list[Patient],
     coverages: list[Coverage],
+    clinical_res: GeneratedClinicalResult | None = None,
 ) -> ValidationReport:
-    """Performs rigorous integrity, relationship, partition, and zero-leakage validation on generated data."""
+    """Performs rigorous integrity, relationship, partition, clinical timeline, and FHIR validation."""
     report = ValidationReport(passed=True)
 
-    # 1. Counts validation
+    # 1. Base Counts validation
     expected_counts = {
         "organizations": profile.organization_count,
         "facilities": profile.organization_count * profile.facilities_per_org,
@@ -50,6 +56,16 @@ def validate_dataset(
         "patients": len(patients),
         "coverages": len(coverages),
     }
+
+    if clinical_res:
+        actual_counts["encounters"] = len(clinical_res.encounters)
+        actual_counts["conditions"] = len(clinical_res.conditions)
+        actual_counts["procedures"] = len(clinical_res.procedures)
+        actual_counts["observations"] = len(clinical_res.observations)
+        actual_counts["medication_requests"] = len(clinical_res.medication_requests)
+        actual_counts["diagnostic_reports"] = len(clinical_res.diagnostic_reports)
+        actual_counts["clinical_documents"] = len(clinical_res.clinical_documents)
+        actual_counts["fhir_resources"] = len(clinical_res.fhir_resources)
 
     counts_valid = True
     for entity, exp in expected_counts.items():
@@ -151,6 +167,13 @@ def validate_dataset(
             if CREDIT_CARD_PATTERN.search(s):
                 phi_violations.append(f"Prohibited credit card pattern found in patient field: {s}")
 
+    if clinical_res:
+        for doc in clinical_res.clinical_documents:
+            if SSN_PATTERN.search(doc.body_text):
+                phi_violations.append(f"Prohibited SSN pattern found in clinical document: {doc.id}")
+            if CREDIT_CARD_PATTERN.search(doc.body_text):
+                phi_violations.append(f"Prohibited credit card pattern found in clinical document: {doc.id}")
+
     if phi_violations:
         report.errors.extend(phi_violations)
 
@@ -177,6 +200,102 @@ def validate_dataset(
         "errors": len(demo_errors),
     }
 
-    # Determine final status
+    # 7. Clinical Timeline Temporal & Relationship Coherence
+    if clinical_res:
+        clinical_errors: list[str] = []
+        enc_by_id = {enc.id: enc for enc in clinical_res.encounters}
+
+        for enc in clinical_res.encounters:
+            if enc.start_time > enc.end_time:
+                clinical_errors.append(f"Encounter '{enc.id}' has start_time > end_time")
+            if enc.patient_id not in patient_ids:
+                clinical_errors.append(f"Encounter '{enc.id}' references nonexistent patient '{enc.patient_id}'")
+
+        # Check conditions
+        for cond in clinical_res.conditions:
+            enc = enc_by_id.get(cond.encounter_id)
+            if not enc:
+                clinical_errors.append(f"Condition '{cond.id}' references nonexistent encounter '{cond.encounter_id}'")
+            elif cond.patient_id != enc.patient_id:
+                clinical_errors.append(f"Condition '{cond.id}' patient_id != encounter patient_id (composite violation)")
+
+        # Check procedures
+        for proc in clinical_res.procedures:
+            enc = enc_by_id.get(proc.encounter_id)
+            if not enc:
+                clinical_errors.append(f"Procedure '{proc.id}' references nonexistent encounter '{proc.encounter_id}'")
+            else:
+                if proc.patient_id != enc.patient_id:
+                    clinical_errors.append(f"Procedure '{proc.id}' patient_id != encounter patient_id")
+                if not (enc.start_time <= proc.performed_time <= enc.end_time):
+                    clinical_errors.append(f"Procedure '{proc.id}' performed_time outside encounter period")
+
+        # Check observations
+        for obs in clinical_res.observations:
+            enc = enc_by_id.get(obs.encounter_id)
+            if not enc:
+                clinical_errors.append(f"Observation '{obs.id}' references nonexistent encounter '{obs.encounter_id}'")
+            elif obs.patient_id != enc.patient_id:
+                clinical_errors.append(f"Observation '{obs.id}' patient_id != encounter patient_id")
+
+        # Check clinical documents text hash & encounter linkage
+        for doc in clinical_res.clinical_documents:
+            enc = enc_by_id.get(doc.encounter_id)
+            if not enc:
+                clinical_errors.append(f"Document '{doc.id}' references nonexistent encounter '{doc.encounter_id}'")
+            elif doc.patient_id != enc.patient_id:
+                clinical_errors.append(f"Document '{doc.id}' patient_id != encounter patient_id")
+
+            expected_hash = hashlib.sha256(doc.body_text.encode("utf-8")).hexdigest()
+            if doc.text_hash != expected_hash:
+                clinical_errors.append(f"Document '{doc.id}' text_hash mismatch")
+
+        if clinical_errors:
+            report.errors.extend(clinical_errors)
+
+        report.checks["clinical_timeline_coherence"] = {
+            "valid": len(clinical_errors) == 0,
+            "error_count": len(clinical_errors),
+        }
+
+        # 8. Normalized to FHIR Parity & Integrity
+        fhir_errors: list[str] = []
+        expected_fhir_count = (
+            len(patients)
+            + len(clinical_res.encounters)
+            + len(clinical_res.conditions)
+            + len(clinical_res.procedures)
+            + len(clinical_res.observations)
+            + len(clinical_res.medication_requests)
+            + len(clinical_res.diagnostic_reports)
+            + len(clinical_res.clinical_documents)
+        )
+        actual_fhir_count = len(clinical_res.fhir_resources)
+        if actual_fhir_count != expected_fhir_count:
+            fhir_errors.append(
+                f"FHIR resource count mismatch: expected {expected_fhir_count}, got {actual_fhir_count}"
+            )
+
+        for fr in clinical_res.fhir_resources:
+            if fr.fhir_version != "R4":
+                fhir_errors.append(f"FHIR resource '{fr.id}' has invalid version '{fr.fhir_version}'")
+            if fr.validation_status != "VALID":
+                fhir_errors.append(f"FHIR resource '{fr.id}' has non-valid status '{fr.validation_status}'")
+            if "resourceType" not in fr.payload:
+                fhir_errors.append(f"FHIR resource '{fr.id}' payload missing resourceType")
+            if fr.payload.get("resourceType") != fr.resource_type:
+                fhir_errors.append(f"FHIR resource '{fr.id}' payload resourceType mismatch")
+
+        if fhir_errors:
+            report.errors.extend(fhir_errors)
+
+        report.checks["fhir_parity_and_integrity"] = {
+            "valid": len(fhir_errors) == 0,
+            "expected_count": expected_fhir_count,
+            "actual_count": actual_fhir_count,
+            "error_count": len(fhir_errors),
+        }
+
+    # Final verdict
     report.passed = len(report.errors) == 0
     return report
