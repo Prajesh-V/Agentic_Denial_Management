@@ -77,6 +77,7 @@ Agentic_Denial_Management/
     +-- PHASE_3_ACCEPTANCE.md   # Phase 3: Synthetic data factory v1 acceptance report
     +-- PHASE_4_ACCEPTANCE.md   # Phase 4: Synthetic clinical timelines and FHIR acceptance report
     +-- PHASE_5_ACCEPTANCE.md   # Phase 5: Synthetic claims, payer policies & 12 denial categories report
+    +-- PHASE_6_ACCEPTANCE.md   # Phase 6: Evidence corpus ingestion & document processing report
 ```
 
 ---
@@ -92,7 +93,7 @@ Agentic_Denial_Management/
 | **Phase 3** | Synthetic Data Factory v1: Organizations and Patients | **COMPLETED** | `docs/PHASE_3_ACCEPTANCE.md`, `backend/app/data_factory/`, `scripts/synthetic_factory_cli.py` |
 | **Phase 4** | Synthetic Clinical Timelines & FHIR Resource Mapping | **COMPLETED** | `docs/PHASE_4_ACCEPTANCE.md`, `backend/app/fhir/`, `backend/app/data_factory/generators/clinical.py` |
 | **Phase 5** | Synthetic Claims, Payer Policy & Denial World | **COMPLETED** | `docs/PHASE_5_ACCEPTANCE.md`, `backend/app/data_factory/generators/claims.py` |
-| **Phase 6** | Evidence Corpus Ingestion & Document Processing Pipeline | **PENDING AUTHORIZATION** | *Awaiting user approval before proceeding* |
+| **Phase 6** | Evidence Corpus Ingestion & Document Processing Pipeline | **COMPLETED** | `docs/PHASE_6_ACCEPTANCE.md`, `backend/app/ingestion/`, `scripts/ingest_corpus.py` |
 
 ---
 

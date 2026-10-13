@@ -148,3 +148,17 @@ To prevent cross-patient or cross-tenant foreign key leakage:
 - `encounters` has `UNIQUE(id, patient_id)`.
 - Child clinical records (`conditions`, `procedures`, `observations`, `medication_requests`, `diagnostic_reports`, `clinical_documents`) enforce composite foreign key `FOREIGN KEY (encounter_id, patient_id) REFERENCES encounters(id, patient_id)`.
 - Database engine blocks cross-patient associations at commit time.
+
+### 9.6 Evidence Corpus Ingestion Schema Architecture & Scope Invariants (ADR-007)
+- **Problem Statement:** Phase 6 requires ingesting patient-scoped clinical narratives/structured records, shared payer-scoped coverage policies, and claim-scoped denial adjudication events into an evidence corpus. Payer policies are shared across all patients covered by that payer and must never be falsely attributed to an individual patient.
+- **Architectural Trade-Off Evaluated:**
+  - *Option A:* Introduce a 41st table `payer_policy_chunks` separate from `evidence_chunks`. Rejected because it fragments downstream hybrid retrieval, requires complex polymorphic foreign key arrays in `evidence_assessments.supporting_chunk_ids`, and violates the strict 40-table inventory contract tested in `test_models.py`.
+  - *Option B (Chosen):* Extend `evidence_chunks` to support polymorphic corpus documents with explicit scoping columns and database-level scope check constraints (`ck_chunk_scope_consistency`).
+- **Schema Details (Migration `8d90fee8c001_extend_evidence_chunks_corpus`):**
+  - Columns Added: `dataset_build_id`, `evidentiary_role`, `payer_id`, `payer_policy_version_id`, `claim_id`, `denial_event_id`, `section_name`, `source_text_offset`, `source_text_length`, `metadata` (JSONB).
+  - Scope Check Constraint (`ck_chunk_scope_consistency`):
+    - `PAYER_POLICY`: `patient_id IS NULL AND payer_id IS NOT NULL AND payer_policy_version_id IS NOT NULL AND claim_id IS NULL AND denial_event_id IS NULL`.
+    - `CLINICAL_SUPPORTING`: `patient_id IS NOT NULL AND payer_id IS NULL AND payer_policy_version_id IS NULL AND denial_event_id IS NULL`.
+    - `DENIAL_CONTEXT`: `patient_id IS NOT NULL AND claim_id IS NOT NULL AND denial_event_id IS NOT NULL AND payer_policy_version_id IS NULL`.
+  - Uniqueness & Supersession: `uq_evidence_chunk_source_version_idx` on `(source_resource_id, chunker_version, chunk_index)` and partial unique index `ix_evidence_chunk_active_source` on `(source_resource_id, chunk_index) WHERE is_active = TRUE`.
+  - Zero Patient Leakage: All clinical composite foreign keys (`fk_chunk_clinical_doc_patient`, `fk_chunk_diag_report_patient`, etc.) and claim foreign keys (`fk_chunk_claim_patient`, `fk_chunk_denial_claim`) remain strictly enforced by PostgreSQL.
