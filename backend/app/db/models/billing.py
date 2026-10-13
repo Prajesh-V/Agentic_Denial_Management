@@ -74,6 +74,7 @@ class Coverage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint("end_date IS NULL OR end_date >= start_date", name="ck_coverage_dates"),
+        UniqueConstraint("id", "patient_id", name="uq_coverage_id_patient"),
     )
 
     # Relationships
@@ -168,10 +169,29 @@ class Claim(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
 
     __table_args__ = (
+        UniqueConstraint("id", "patient_id", name="uq_claim_id_patient"),
         ForeignKeyConstraint(
             ["patient_id", "organization_id"],
             ["patients.id", "patients.organization_id"],
             name="fk_claim_patient_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["coverage_id", "patient_id"],
+            ["coverage.id", "coverage.patient_id"],
+            name="fk_claim_coverage_patient",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["facility_id", "organization_id"],
+            ["facilities.id", "facilities.organization_id"],
+            name="fk_claim_facility_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["rendering_practitioner_id", "organization_id"],
+            ["practitioners.id", "practitioners.organization_id"],
+            name="fk_claim_practitioner_org",
             ondelete="RESTRICT",
         ),
         CheckConstraint("service_end_date >= service_start_date", name="ck_claim_service_dates"),
@@ -189,14 +209,17 @@ class ClaimDiagnosis(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     claim_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("claims.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    patient_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
         nullable=False,
         index=True,
     )
     diagnosis_pointer: Mapped[int] = mapped_column(Integer, nullable=False)  # 1 to 12
     condition_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("conditions.id", ondelete="SET NULL"),
         nullable=True,
     )
     diagnosis_code: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -207,6 +230,18 @@ class ClaimDiagnosis(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("claim_id", "diagnosis_pointer", name="uq_claim_diag_pointer"),
         CheckConstraint("diagnosis_pointer >= 1 AND diagnosis_pointer <= 12", name="ck_claim_diag_pointer_range"),
+        ForeignKeyConstraint(
+            ["claim_id", "patient_id"],
+            ["claims.id", "claims.patient_id"],
+            name="fk_claim_diag_claim_patient",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["condition_id", "patient_id"],
+            ["conditions.id", "conditions.patient_id"],
+            name="fk_claim_diag_condition_patient",
+            ondelete="SET NULL",
+        ),
     )
 
     # Relationships
@@ -242,6 +277,7 @@ class ClaimLine(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("claim_id", "line_number", name="uq_claim_line_number"),
+        UniqueConstraint("id", "claim_id", name="uq_claim_line_id_claim"),
         CheckConstraint("billed_amount >= 0", name="ck_claim_line_billed_non_negative"),
     )
 
@@ -329,6 +365,13 @@ class DenialEvent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     is_appealable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     __table_args__ = (
+        UniqueConstraint("id", "claim_id", name="uq_denial_id_claim"),
+        ForeignKeyConstraint(
+            ["claim_line_id", "claim_id"],
+            ["claim_lines.id", "claim_lines.claim_id"],
+            name="fk_denial_claim_line_claim",
+            ondelete="SET NULL",
+        ),
         CheckConstraint("appeal_deadline >= denial_date", name="ck_denial_deadline_after_date"),
         CheckConstraint("denied_amount >= 0", name="ck_denied_amount_non_negative"),
     )
@@ -373,13 +416,21 @@ class Appeal(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     denial_event_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("denial_events.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
     appeal_level: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="DRAFTING", nullable=False, index=True)
     filing_deadline: Mapped[date] = mapped_column(Date, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["denial_event_id", "claim_id"],
+            ["denial_events.id", "denial_events.claim_id"],
+            name="fk_appeal_denial_claim",
+            ondelete="RESTRICT",
+        ),
+    )
 
     # Relationships
     draft_versions: Mapped[list["AppealDraftVersion"]] = relationship("AppealDraftVersion", back_populates="appeal", cascade="all, delete-orphan")
@@ -415,6 +466,7 @@ class AppealDraftVersion(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("appeal_id", "version_number", name="uq_appeal_draft_version"),
+        UniqueConstraint("id", "appeal_id", name="uq_appeal_draft_id_appeal"),
     )
 
     # Relationships
@@ -448,6 +500,15 @@ class AppealDecision(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
     )
 
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["draft_version_id", "appeal_id"],
+            ["appeal_draft_versions.id", "appeal_draft_versions.appeal_id"],
+            name="fk_decision_draft_appeal",
+            ondelete="RESTRICT",
+        ),
+    )
+
 
 class Export(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "exports"
@@ -474,4 +535,13 @@ class Export(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         nullable=False,
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["draft_version_id", "appeal_id"],
+            ["appeal_draft_versions.id", "appeal_draft_versions.appeal_id"],
+            name="fk_export_draft_appeal",
+            ondelete="RESTRICT",
+        ),
     )

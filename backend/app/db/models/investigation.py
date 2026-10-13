@@ -4,9 +4,11 @@ from datetime import UTC, date, datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     String,
     Text,
@@ -29,7 +31,6 @@ class InvestigationRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     denial_event_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("denial_events.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
@@ -51,6 +52,15 @@ class InvestigationRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["denial_event_id", "claim_id"],
+            ["denial_events.id", "denial_events.claim_id"],
+            name="fk_investigation_denial_claim",
+            ondelete="RESTRICT",
+        ),
+    )
 
     # Relationships
     retrieval_attempts: Mapped[list["RetrievalAttempt"]] = relationship("RetrievalAttempt", back_populates="run", cascade="all, delete-orphan")
@@ -92,38 +102,35 @@ class EvidenceChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     source_resource_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     encounter_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("encounters.id", ondelete="SET NULL"),
         nullable=True,
     )
     # Explicit polymorphic provenance foreign keys
     clinical_document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("clinical_documents.id", ondelete="SET NULL"),
         nullable=True,
     )
     diagnostic_report_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("diagnostic_reports.id", ondelete="SET NULL"),
         nullable=True,
     )
     observation_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("observations.id", ondelete="SET NULL"),
         nullable=True,
     )
     condition_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("conditions.id", ondelete="SET NULL"),
         nullable=True,
     )
     procedure_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("procedures.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    medication_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
         nullable=True,
     )
     fhir_resource_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("fhir_resources.id", ondelete="SET NULL"),
         nullable=True,
     )
 
@@ -139,6 +146,80 @@ class EvidenceChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("patient_id", "source_resource_id", "chunk_index", name="uq_evidence_chunk_patient_src_idx"),
+        ForeignKeyConstraint(
+            ["clinical_document_id", "patient_id"],
+            ["clinical_documents.id", "clinical_documents.patient_id"],
+            name="fk_chunk_clinical_doc_patient",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["diagnostic_report_id", "patient_id"],
+            ["diagnostic_reports.id", "diagnostic_reports.patient_id"],
+            name="fk_chunk_diag_report_patient",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["observation_id", "patient_id"],
+            ["observations.id", "observations.patient_id"],
+            name="fk_chunk_observation_patient",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["condition_id", "patient_id"],
+            ["conditions.id", "conditions.patient_id"],
+            name="fk_chunk_condition_patient",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["procedure_id", "patient_id"],
+            ["procedures.id", "procedures.patient_id"],
+            name="fk_chunk_procedure_patient",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["medication_request_id", "patient_id"],
+            ["medication_requests.id", "medication_requests.patient_id"],
+            name="fk_chunk_med_req_patient",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["fhir_resource_id", "patient_id"],
+            ["fhir_resources.id", "fhir_resources.patient_id"],
+            name="fk_chunk_fhir_resource_patient",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["encounter_id", "patient_id"],
+            ["encounters.id", "encounters.patient_id"],
+            name="fk_chunk_encounter_patient",
+            ondelete="SET NULL",
+        ),
+        CheckConstraint(
+            """
+            (source_resource_type = 'ClinicalDocument' AND clinical_document_id IS NOT NULL AND source_resource_id = clinical_document_id) OR
+            (source_resource_type = 'DiagnosticReport' AND diagnostic_report_id IS NOT NULL AND source_resource_id = diagnostic_report_id) OR
+            (source_resource_type = 'Observation' AND observation_id IS NOT NULL AND source_resource_id = observation_id) OR
+            (source_resource_type = 'Condition' AND condition_id IS NOT NULL AND source_resource_id = condition_id) OR
+            (source_resource_type = 'Procedure' AND procedure_id IS NOT NULL AND source_resource_id = procedure_id) OR
+            (source_resource_type = 'MedicationRequest' AND medication_request_id IS NOT NULL AND source_resource_id = medication_request_id) OR
+            (source_resource_type = 'FhirResource' AND fhir_resource_id IS NOT NULL AND source_resource_id = fhir_resource_id) OR
+            (source_resource_type = 'Encounter' AND encounter_id IS NOT NULL AND source_resource_id = encounter_id)
+            """,
+            name="ck_chunk_source_consistency",
+        ),
+        CheckConstraint(
+            """
+            (CASE WHEN clinical_document_id IS NOT NULL THEN 1 ELSE 0 END +
+             CASE WHEN diagnostic_report_id IS NOT NULL THEN 1 ELSE 0 END +
+             CASE WHEN observation_id IS NOT NULL THEN 1 ELSE 0 END +
+             CASE WHEN condition_id IS NOT NULL THEN 1 ELSE 0 END +
+             CASE WHEN procedure_id IS NOT NULL THEN 1 ELSE 0 END +
+             CASE WHEN medication_request_id IS NOT NULL THEN 1 ELSE 0 END +
+             CASE WHEN fhir_resource_id IS NOT NULL THEN 1 ELSE 0 END +
+             CASE WHEN (source_resource_type = 'Encounter' AND encounter_id IS NOT NULL) THEN 1 ELSE 0 END) = 1
+            """,
+            name="ck_chunk_single_canonical_source",
+        ),
     )
 
 

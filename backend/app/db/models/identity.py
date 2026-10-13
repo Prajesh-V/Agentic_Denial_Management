@@ -34,6 +34,10 @@ class Organization(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class Facility(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "facilities"
 
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_facility_id_org"),
+    )
+
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -50,6 +54,10 @@ class Facility(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class Practitioner(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "practitioners"
+
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_practitioner_id_org"),
+    )
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

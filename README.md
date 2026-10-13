@@ -73,6 +73,7 @@ Agentic_Denial_Management/
     +-- INTERFACE_CONTRACTS.md  # Phase 1: REST API, LangGraph state, Stitch screens
     +-- PHASE_1_ACCEPTANCE.md   # Phase 1: Verification audit & stop-gate report
     +-- PHASE_2_ACCEPTANCE.md   # Phase 2: Database foundation verification & acceptance report
+    +-- PHASE_2_1_ACCEPTANCE.md # Phase 2.1: Database integrity and security remediation report
 ```
 
 ---
@@ -84,6 +85,7 @@ Agentic_Denial_Management/
 | **Phase 0** | Recovery, Repository Baseline & Environment Audit | **COMPLETED** | `docs/INITIALIZATION_REPORT.md`, `tests/unit/test_health.py` |
 | **Phase 1** | Product Contract, ERD and System Interfaces | **COMPLETED** | `docs/PRODUCT_CONTRACT.md`, `docs/ERD.md`, `docs/SCHEMA_DECISIONS.md`, `docs/DATA_CONTRACTS.md`, `docs/SYNTHETIC_DATA_FACTORY_DESIGN.md`, `docs/INTERFACE_CONTRACTS.md`, `docs/PHASE_1_ACCEPTANCE.md` |
 | **Phase 2** | Database Foundation (SQLAlchemy 2, Alembic, Migrations) | **COMPLETED** | `docs/PHASE_2_ACCEPTANCE.md`, `backend/alembic/versions/`, `backend/app/db/models/` |
+| **Phase 2.1** | Database Integrity & Security Remediation | **COMPLETED** | `docs/PHASE_2_1_ACCEPTANCE.md`, `backend/alembic/versions/6089fee8b997_remediation_integrity_and_security.py` |
 | **Phase 3** | Synthetic Data Factory v1: Organizations and Patients | **PENDING AUTHORIZATION** | *Awaiting user approval before proceeding* |
 
 ---

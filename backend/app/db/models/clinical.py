@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 from datetime import datetime
 from decimal import Decimal
 
@@ -80,6 +80,7 @@ class Condition(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     abatement_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
+        UniqueConstraint("id", "patient_id", name="uq_condition_id_patient"),
         ForeignKeyConstraint(
             ["encounter_id", "patient_id"],
             ["encounters.id", "encounters.patient_id"],
@@ -118,6 +119,7 @@ class Procedure(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     performed_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
+        UniqueConstraint("id", "patient_id", name="uq_procedure_id_patient"),
         ForeignKeyConstraint(
             ["encounter_id", "patient_id"],
             ["encounters.id", "encounters.patient_id"],
@@ -155,6 +157,7 @@ class Observation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     effective_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
     __table_args__ = (
+        UniqueConstraint("id", "patient_id", name="uq_observation_id_patient"),
         ForeignKeyConstraint(
             ["encounter_id", "patient_id"],
             ["encounters.id", "encounters.patient_id"],
@@ -194,6 +197,7 @@ class MedicationRequest(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     authored_on: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
+        UniqueConstraint("id", "patient_id", name="uq_med_req_id_patient"),
         ForeignKeyConstraint(
             ["encounter_id", "patient_id"],
             ["encounters.id", "encounters.patient_id"],
@@ -227,6 +231,7 @@ class DiagnosticReport(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     effective_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
+        UniqueConstraint("id", "patient_id", name="uq_diag_report_id_patient"),
         ForeignKeyConstraint(
             ["encounter_id", "patient_id"],
             ["encounters.id", "encounters.patient_id"],
@@ -265,6 +270,7 @@ class ClinicalDocument(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     authored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
+        UniqueConstraint("id", "patient_id", name="uq_clinical_doc_id_patient"),
         ForeignKeyConstraint(
             ["encounter_id", "patient_id"],
             ["encounters.id", "encounters.patient_id"],
@@ -299,4 +305,5 @@ class FhirResource(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("resource_type", "fhir_id", name="uq_fhir_resource_type_id"),
+        UniqueConstraint("id", "patient_id", name="uq_fhir_resource_id_patient"),
     )

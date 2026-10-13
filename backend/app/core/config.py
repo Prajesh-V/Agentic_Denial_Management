@@ -1,11 +1,14 @@
 from functools import lru_cache
+from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    _repo_root = Path(__file__).resolve().parents[3]
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(str(_repo_root / ".env"), ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -21,11 +24,16 @@ class Settings(BaseSettings):
 
     # PostgreSQL Database
     POSTGRES_USER: str = "denial_app"
-    POSTGRES_PASSWORD: str = "local_dev_only_change_this_2026"
+    POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = "denial_management"
     POSTGRES_HOST: str = "127.0.0.1"
     POSTGRES_PORT: int = 5432
     DATABASE_URL: str | None = None
+
+    # Test Database Configuration
+    TEST_DATABASE_NAME: str = "denial_management_test"
+    TEST_DATABASE_URL: str | None = None
+    TEST_ADMIN_DATABASE_URL: str | None = None
 
     # Local LLM / Ollama
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
@@ -41,14 +49,52 @@ class Settings(BaseSettings):
     def effective_database_url(self) -> str:
         if self.DATABASE_URL:
             return self.DATABASE_URL
+        if not self.POSTGRES_PASSWORD:
+            raise ValueError("Database credentials missing: POSTGRES_PASSWORD or DATABASE_URL must be configured.")
         return (
             f"postgresql+psycopg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
 
     @property
+    def effective_test_database_url(self) -> str:
+        if self.TEST_DATABASE_URL:
+            self.validate_disposable_test_database_from_url(self.TEST_DATABASE_URL)
+            return self.TEST_DATABASE_URL
+        base = self.effective_database_url
+        parsed = urlparse(base)
+        test_url = parsed._replace(path=f"/{self.TEST_DATABASE_NAME}").geturl()
+        self.validate_disposable_test_database_from_url(test_url)
+        return test_url
+
+    @property
+    def effective_test_admin_database_url(self) -> str:
+        if self.TEST_ADMIN_DATABASE_URL:
+            return self.TEST_ADMIN_DATABASE_URL
+        base = self.effective_database_url
+        parsed = urlparse(base)
+        return parsed._replace(path="/postgres").geturl()
+
+    def validate_disposable_test_database_from_url(self, url: str) -> None:
+        parsed = urlparse(url)
+        db_name = parsed.path.lstrip("/")
+        self.validate_disposable_test_database(db_name)
+
+    def validate_disposable_test_database(self, db_name: str) -> None:
+        if not db_name:
+            raise ValueError("Test database name cannot be empty.")
+        if db_name == self.POSTGRES_DB:
+            raise ValueError(
+                f"SAFETY VIOLATION: Test database '{db_name}' matches primary application database '{self.POSTGRES_DB}'. "
+                "Destructive test operations are strictly forbidden on the primary database."
+            )
+        if not (db_name.endswith("_test") or db_name.startswith("test_")):
+            raise ValueError(
+                f"SAFETY VIOLATION: Test database '{db_name}' does not meet safety naming pattern (*_test or test_*)."
+            )
+
+    @property
     def sanitized_database_url(self) -> str:
-        """Returns connection URL with masked password for safe logging."""
         return (
             f"postgresql+psycopg://{self.POSTGRES_USER}:***"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
