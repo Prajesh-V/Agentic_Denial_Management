@@ -24,35 +24,35 @@ Agentic_Denial_Management/
 +-- .gitignore                  # Git ignore rules
 +-- compose.yaml                # Docker Compose PostgreSQL 18 service
 +-- frontend/                   # Next.js 16 App Router (React 19, TypeScript, Tailwind 4)
-¦   +-- src/app/                # App router pages and layouts
-¦   +-- package.json            # Frontend dependencies (motion, lucide-react)
+|   +-- src/app/                # App router pages and layouts
+|   +-- package.json            # Frontend dependencies (motion, lucide-react)
 +-- backend/                    # FastAPI application & modules
-¦   +-- app/
-¦       +-- api/                # API routes and health endpoints
-¦       +-- core/               # Pydantic Settings & configuration
-¦       +-- db/                 # Database connection & session factory
-¦       +-- llm/                # Local Ollama client integration
-¦       +-- domain/             # Domain entities & types
-¦       +-- services/           # Business logic & workflows
-¦       +-- fhir/               # FHIR R4 resource mappings
-¦       +-- data_factory/       # Deterministic synthetic data generator
-¦       +-- ingestion/          # Document & note text extraction
-¦       +-- retrieval/          # Hybrid search (PostgreSQL FTS + FAISS CPU)
-¦       +-- agent/              # LangGraph investigation workflow
-¦       +-- audit/              # Immutable audit logging
+|   +-- app/
+|       +-- api/                # API routes and health endpoints
+|       +-- core/               # Pydantic Settings & configuration
+|       +-- db/                 # Database connection & session factory
+|       +-- llm/                # Local Ollama client integration
+|       +-- domain/             # Domain entities & types
+|       +-- services/           # Business logic & workflows
+|       +-- fhir/               # FHIR R4 resource mappings
+|       +-- data_factory/       # Deterministic synthetic data generator
+|       +-- ingestion/          # Document & note text extraction
+|       +-- retrieval/          # Hybrid search (PostgreSQL FTS + FAISS CPU)
+|       +-- agent/              # LangGraph investigation workflow
+|       +-- audit/              # Immutable audit logging
 +-- scripts/                    # Verification & utility scripts
 +-- tests/                      # Automated test suite
-¦   +-- unit/                   # Unit tests (Pytest)
-¦   +-- integration/            # Integration tests
-¦   +-- e2e/                    # End-to-end tests
+|   +-- unit/                   # Unit tests (Pytest)
+|   +-- integration/            # Integration tests
+|   +-- e2e/                    # End-to-end tests
 +-- data/                       # Synthetic data foundation
-¦   +-- raw/                    # Raw templates & config
-¦   +-- generated/              # Output datasets by namespace
-¦   +-- manifests/              # Generation manifests & seeds
-¦   +-- validation/             # Integrity & timeline reports
+|   +-- raw/                    # Raw templates & config
+|   +-- generated/              # Output datasets by namespace
+|   +-- manifests/              # Generation manifests & seeds
+|   +-- validation/             # Integrity & timeline reports
 +-- artifacts/                  # Benchmark & evaluation runs
 +-- backups/                    # Local backups
-+-- docs/                       # Authoritative project specifications
++-- docs/                       # Authoritative project specifications & contracts
     +-- INITIALIZATION_REPORT.md# Full environment verification report
     +-- PRD.md                  # Product requirements document
     +-- ARCHITECTURE.md         # System architecture & data flow
@@ -65,7 +65,24 @@ Agentic_Denial_Management/
     +-- PHASES.md               # 16-phase milestone execution plan
     +-- EVALUATION.md           # Retrieval & drafting benchmarks
     +-- SECURITY_AND_SAFETY.md  # Safety, PHI prevention & provenance rules
+    +-- PRODUCT_CONTRACT.md     # Phase 1: User roles, lifecycles, denial taxonomy
+    +-- ERD.md                  # Phase 1: Full 32-table Mermaid ERD & data dictionary
+    +-- SCHEMA_DECISIONS.md     # Phase 1: Architectural storage decisions & constraints
+    +-- DATA_CONTRACTS.md       # Phase 1: Pydantic v2 schemas & FHIR R4 definitions
+    +-- SYNTHETIC_DATA_FACTORY_DESIGN.md # Phase 1: Factory layout, 12 scenario templates
+    +-- INTERFACE_CONTRACTS.md  # Phase 1: REST API, LangGraph state, Stitch screens
+    +-- PHASE_1_ACCEPTANCE.md   # Phase 1: Verification audit & stop-gate report
 ```
+
+---
+
+## Phase Execution Progress
+
+| Phase | Description | Status | Reference Artifacts |
+|---|---|---|---|
+| **Phase 0** | Recovery, Repository Baseline & Environment Audit | **COMPLETED** | `docs/INITIALIZATION_REPORT.md`, `tests/unit/test_health.py` |
+| **Phase 1** | Product Contract, ERD and System Interfaces | **COMPLETED** | `docs/PRODUCT_CONTRACT.md`, `docs/ERD.md`, `docs/SCHEMA_DECISIONS.md`, `docs/DATA_CONTRACTS.md`, `docs/SYNTHETIC_DATA_FACTORY_DESIGN.md`, `docs/INTERFACE_CONTRACTS.md`, `docs/PHASE_1_ACCEPTANCE.md` |
+| **Phase 2** | Database Foundation (SQLAlchemy 2, Alembic, Migrations) | **PENDING AUTHORIZATION** | *Awaiting user approval before proceeding* |
 
 ---
 
