@@ -1,5 +1,5 @@
 """Master pipeline orchestrator for synthetic dataset generation, clinical timelines, FHIR mapping,
-transactional persistence, and validation."""
+claims, payer policies, remittances, denial events, transactional persistence, and validation."""
 
 import logging
 
@@ -11,16 +11,22 @@ from backend.app.data_factory.config import (
     calculate_config_hash,
     get_profile,
 )
+from backend.app.data_factory.generators.claims import generate_claims
 from backend.app.data_factory.generators.clinical import generate_clinical
 from backend.app.data_factory.generators.identities import generate_identities
 from backend.app.data_factory.generators.insurance import generate_insurance
 from backend.app.data_factory.generators.organizations import generate_organizations
 from backend.app.data_factory.validator import validate_dataset
 from backend.app.db.models import (
+    Authorization,
+    Claim,
+    ClaimDiagnosis,
+    ClaimLine,
     ClinicalDocument,
     Condition,
     Coverage,
     DatasetBuild,
+    DenialEvent,
     DiagnosticReport,
     Encounter,
     Facility,
@@ -32,8 +38,12 @@ from backend.app.db.models import (
     Patient,
     Payer,
     PayerPlan,
+    PayerPolicyVersion,
     Practitioner,
     Procedure,
+    Remittance,
+    RemittanceLine,
+    ServiceCode,
     User,
     UserRole,
 )
@@ -80,7 +90,7 @@ class DataFactoryPipeline:
                         "Specify replace_existing=True to rebuild or choose a distinct build_id."
                     )
 
-            # 2. Subsystem domain generation
+            # 2. Subsystem domain generation: Organizations & Identities
             logger.info(f"Generating organizations for seed={seed}, profile='{profile.name}'...")
             org_res = generate_organizations(seed, profile)
 
@@ -141,12 +151,12 @@ class DataFactoryPipeline:
                 if existing_user:
                     old_uid = user.id
                     user.id = existing_user.id
-                    for m in org_res.memberships:
-                        if m.user_id == old_uid:
-                            m.user_id = existing_user.id
                     for ur in org_res.user_roles:
                         if ur.user_id == old_uid:
                             ur.user_id = existing_user.id
+                    for m in org_res.memberships:
+                        if m.user_id == old_uid:
+                            m.user_id = existing_user.id
                 else:
                     db.add(user)
 
@@ -207,9 +217,57 @@ class DataFactoryPipeline:
                 practitioners=org_res.practitioners,
             )
 
-            # 5. Validation gate before commit
+            # 5. Generate Claims, Policies, Remittances, Authorizations & Denials
+            logger.info("Generating synthetic claims, payer policies, authorizations, remittances, and denials...")
+            claims_res = generate_claims(
+                master_seed=seed,
+                profile=profile,
+                org_res=org_res,
+                patients=patients,
+                coverages=coverages,
+                clinical_res=clinical_res,
+            )
+
+            # Reconcile shared ServiceCodes catalog
+            for sc in claims_res.service_codes:
+                existing_sc = db.execute(
+                    select(ServiceCode).where(ServiceCode.code == sc.code)
+                ).scalar_one_or_none()
+                if existing_sc:
+                    old_sc_id = sc.id
+                    sc.id = existing_sc.id
+                    for cl in claims_res.claim_lines:
+                        if cl.service_code_id == old_sc_id:
+                            cl.service_code_id = existing_sc.id
+                    for auth in claims_res.authorizations:
+                        if auth.service_code_id == old_sc_id:
+                            auth.service_code_id = existing_sc.id
+                else:
+                    db.add(sc)
+
+            # Reconcile shared PayerPolicyVersions
+            for pv in claims_res.policy_versions:
+                existing_pv = db.execute(
+                    select(PayerPolicyVersion).where(
+                        (PayerPolicyVersion.payer_id == pv.payer_id)
+                        & (PayerPolicyVersion.policy_number == pv.policy_number)
+                        & (PayerPolicyVersion.version == pv.version)
+                    )
+                ).scalar_one_or_none()
+                if existing_pv:
+                    old_pv_id = pv.id
+                    pv.id = existing_pv.id
+                    for de in claims_res.denial_events:
+                        if de.payer_policy_version_id == old_pv_id:
+                            de.payer_policy_version_id = existing_pv.id
+                else:
+                    db.add(pv)
+
+            db.flush()
+
+            # 6. Validation gate before commit
             logger.info("Validating generated dataset graph...")
-            val_report = validate_dataset(profile, org_res, patients, coverages, clinical_res)
+            val_report = validate_dataset(profile, org_res, patients, coverages, clinical_res, claims_res)
 
             if not val_report.passed:
                 err_summary = "; ".join(val_report.errors[:5])
@@ -217,7 +275,7 @@ class DataFactoryPipeline:
                     f"Validation failed for dataset build '{target_build_id}': {err_summary}"
                 )
 
-            # 6. Transactional persistence in strict dependency order
+            # 7. Transactional persistence in strict dependency order
             logger.info("Persisting patients and coverages...")
             for pat in patients:
                 db.add(pat)
@@ -252,6 +310,36 @@ class DataFactoryPipeline:
                 db.add(fhir_rec)
             db.flush()
 
+            logger.info("Persisting authorizations...")
+            for auth in claims_res.authorizations:
+                db.add(auth)
+            db.flush()
+
+            logger.info("Persisting claims, diagnoses, lines...")
+            for clm in claims_res.claims:
+                db.add(clm)
+            db.flush()
+
+            for cd in claims_res.claim_diagnoses:
+                db.add(cd)
+            for cl in claims_res.claim_lines:
+                db.add(cl)
+            db.flush()
+
+            logger.info("Persisting remittances and remittance lines...")
+            for remit in claims_res.remittances:
+                db.add(remit)
+            db.flush()
+
+            for rl in claims_res.remittance_lines:
+                db.add(rl)
+            db.flush()
+
+            logger.info("Persisting denial events...")
+            for de in claims_res.denial_events:
+                db.add(de)
+            db.flush()
+
             logger.info("Persisting dataset build manifest...")
             dataset_build = DatasetBuild(
                 id=target_build_id,
@@ -260,7 +348,7 @@ class DataFactoryPipeline:
                 profile_name=profile.name,
                 configuration_hash=config_hash,
                 patient_count=len(patients),
-                claim_count=0,
+                claim_count=len(claims_res.claims),
                 validation_passed=True,
                 validation_report=val_report.to_dict(),
             )
@@ -279,11 +367,20 @@ class DataFactoryPipeline:
                 db.close()
 
     def reset(self, build_id: str, session: Session | None = None) -> dict[str, int]:
-        """Safely rolls back and deletes all records associated with a dataset build."""
+        """Safely rolls back and deletes all records associated with a dataset build,
+        preserving shared reference entities (organizations, facilities, practitioners,
+        payers, plans, users, service codes, and payer policy versions)."""
         owns_session = session is None
         db: Session = self.session_factory() if owns_session else session
 
         counts = {
+            "denial_events": 0,
+            "remittance_lines": 0,
+            "remittances": 0,
+            "claim_diagnoses": 0,
+            "claim_lines": 0,
+            "claims": 0,
+            "authorizations": 0,
             "fhir_resources": 0,
             "clinical_documents": 0,
             "diagnostic_reports": 0,
@@ -305,13 +402,82 @@ class DataFactoryPipeline:
             patient_ids = list(patient_ids_res)
 
             if patient_ids:
-                # 2. Delete FHIR resources
+                # 2. Fetch claim IDs and line IDs
+                claim_ids_res = db.execute(
+                    select(Claim.id).where(Claim.patient_id.in_(patient_ids))
+                ).scalars().all()
+                claim_ids = list(claim_ids_res)
+
+                if claim_ids:
+                    claim_line_ids_res = db.execute(
+                        select(ClaimLine.id).where(ClaimLine.claim_id.in_(claim_ids))
+                    ).scalars().all()
+                    claim_line_ids = list(claim_line_ids_res)
+
+                    if claim_line_ids:
+                        remit_line_ids_res = db.execute(
+                            select(RemittanceLine.id, RemittanceLine.remittance_id).where(
+                                RemittanceLine.claim_line_id.in_(claim_line_ids)
+                            )
+                        ).all()
+                        remit_ids = list({r[1] for r in remit_line_ids_res})
+
+                        # Delete DenialEvents
+                        del_de = db.execute(
+                            delete(DenialEvent).where(DenialEvent.claim_id.in_(claim_ids))
+                        )
+                        counts["denial_events"] = del_de.rowcount or 0
+
+                        # Delete RemittanceLines
+                        del_rl = db.execute(
+                            delete(RemittanceLine).where(RemittanceLine.claim_line_id.in_(claim_line_ids))
+                        )
+                        counts["remittance_lines"] = del_rl.rowcount or 0
+
+                        # Delete Remittances
+                        if remit_ids:
+                            del_r = db.execute(
+                                delete(Remittance).where(Remittance.id.in_(remit_ids))
+                            )
+                            counts["remittances"] = del_r.rowcount or 0
+
+                    # Delete ClaimDiagnoses
+                    del_cd = db.execute(
+                        delete(ClaimDiagnosis).where(ClaimDiagnosis.claim_id.in_(claim_ids))
+                    )
+                    counts["claim_diagnoses"] = del_cd.rowcount or 0
+
+                    # Delete ClaimLines
+                    del_cl = db.execute(
+                        delete(ClaimLine).where(ClaimLine.claim_id.in_(claim_ids))
+                    )
+                    counts["claim_lines"] = del_cl.rowcount or 0
+
+                    # Delete Claims
+                    del_claims = db.execute(
+                        delete(Claim).where(Claim.id.in_(claim_ids))
+                    )
+                    counts["claims"] = del_claims.rowcount or 0
+
+                # 3. Delete Authorizations linked to coverages
+                coverage_ids_res = db.execute(
+                    select(Coverage.id).where(Coverage.patient_id.in_(patient_ids))
+                ).scalars().all()
+                coverage_ids = list(coverage_ids_res)
+
+                if coverage_ids:
+                    del_auth = db.execute(
+                        delete(Authorization).where(Authorization.coverage_id.in_(coverage_ids))
+                    )
+                    counts["authorizations"] = del_auth.rowcount or 0
+
+                # 4. Delete FHIR resources
                 del_fhir = db.execute(
                     delete(FhirResource).where(FhirResource.patient_id.in_(patient_ids))
                 )
                 counts["fhir_resources"] = del_fhir.rowcount or 0
 
-                # 3. Delete clinical records (child to parent)
+                # 5. Delete clinical records (child to parent)
                 del_doc = db.execute(
                     delete(ClinicalDocument).where(ClinicalDocument.patient_id.in_(patient_ids))
                 )
@@ -347,19 +513,19 @@ class DataFactoryPipeline:
                 )
                 counts["encounters"] = del_enc.rowcount or 0
 
-                # 4. Delete coverages
+                # 6. Delete coverages
                 cov_del = db.execute(
                     delete(Coverage).where(Coverage.patient_id.in_(patient_ids))
                 )
                 counts["coverages"] = cov_del.rowcount or 0
 
-            # 5. Delete patients
+            # 7. Delete patients
             pat_del = db.execute(
                 delete(Patient).where(Patient.dataset_build_id == build_id)
             )
             counts["patients"] = pat_del.rowcount or 0
 
-            # 6. Delete dataset build record
+            # 8. Delete dataset build record
             build_del = db.execute(
                 delete(DatasetBuild).where(DatasetBuild.id == build_id)
             )

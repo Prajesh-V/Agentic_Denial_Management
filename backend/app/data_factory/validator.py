@@ -1,13 +1,16 @@
 """Rigorous validation for Synthetic Data Factory: counts, foreign keys, partition disjointness,
-synthetic watermarks, zero-PHI regex scans, clinical temporal coherence, and normalized-to-FHIR parity."""
+synthetic watermarks, zero-PHI regex scans, clinical temporal coherence, normalized-to-FHIR parity,
+revenue cycle financial arithmetic, and 12-category denial scenario coverage."""
 
 import hashlib
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 from backend.app.data_factory.config import DataFactoryProfile
+from backend.app.data_factory.generators.claims import GeneratedClaimsResult
 from backend.app.data_factory.generators.clinical import GeneratedClinicalResult
 from backend.app.data_factory.generators.organizations import GeneratedOrganizationsResult
 from backend.app.db.models import Coverage, Patient
@@ -26,6 +29,21 @@ class ValidationReport:
 SSN_PATTERN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 CREDIT_CARD_PATTERN = re.compile(r"\b(?:\d{4}-){3}\d{4}\b")
 
+AUTHORITATIVE_DENIAL_CATEGORIES = {
+    "MED_NEC_01",
+    "PA_MISS_02",
+    "DOC_INCOMP_03",
+    "CODE_MISMATCH_04",
+    "DUP_BUNDLE_05",
+    "ELIG_TIMING_06",
+    "UNTIMELY_07",
+    "NON_COV_08",
+    "UNITS_MOD_09",
+    "COB_OTHER_10",
+    "INSUF_INFO_11",
+    "CLIN_CONFLICT_12",
+}
+
 
 def validate_dataset(
     profile: DataFactoryProfile,
@@ -33,8 +51,10 @@ def validate_dataset(
     patients: list[Patient],
     coverages: list[Coverage],
     clinical_res: GeneratedClinicalResult | None = None,
+    claims_res: GeneratedClaimsResult | None = None,
 ) -> ValidationReport:
-    """Performs rigorous integrity, relationship, partition, clinical timeline, and FHIR validation."""
+    """Performs rigorous integrity, relationship, partition, clinical timeline, FHIR,
+    and revenue cycle claims & denial validation."""
     report = ValidationReport(passed=True)
 
     # 1. Base Counts validation
@@ -67,47 +87,61 @@ def validate_dataset(
         actual_counts["clinical_documents"] = len(clinical_res.clinical_documents)
         actual_counts["fhir_resources"] = len(clinical_res.fhir_resources)
 
-    counts_valid = True
-    for entity, exp in expected_counts.items():
-        act = actual_counts.get(entity, 0)
+    if claims_res:
+        actual_counts["service_codes"] = len(claims_res.service_codes)
+        actual_counts["policy_versions"] = len(claims_res.policy_versions)
+        actual_counts["authorizations"] = len(claims_res.authorizations)
+        actual_counts["claims"] = len(claims_res.claims)
+        actual_counts["claim_diagnoses"] = len(claims_res.claim_diagnoses)
+        actual_counts["claim_lines"] = len(claims_res.claim_lines)
+        actual_counts["remittances"] = len(claims_res.remittances)
+        actual_counts["remittance_lines"] = len(claims_res.remittance_lines)
+        actual_counts["denial_events"] = len(claims_res.denial_events)
+
+    count_errors: list[str] = []
+    for k, exp in expected_counts.items():
+        act = actual_counts.get(k, 0)
         if act != exp:
-            report.errors.append(f"Count mismatch for '{entity}': expected {exp}, got {act}")
-            counts_valid = False
+            count_errors.append(f"Count mismatch for '{k}': expected {exp}, got {act}")
+
+    if count_errors:
+        report.errors.extend(count_errors)
 
     report.checks["counts"] = {
-        "valid": counts_valid,
+        "valid": len(count_errors) == 0,
         "expected": expected_counts,
         "actual": actual_counts,
     }
 
-    # 2. Foreign Key & Reference Integrity
-    org_ids = {o.id for o in org_res.organizations}
-    payer_ids = {p.id for p in org_res.payers}
-    plan_ids = {pl.id for pl in org_res.plans}
-    patient_ids = {pat.id for pat in patients}
-
+    # 2. Foreign Key and Composite Tenant Invariants
     fk_errors: list[str] = []
-    for f in org_res.facilities:
-        if f.organization_id not in org_ids:
-            fk_errors.append(f"Facility '{f.id}' references invalid organization '{f.organization_id}'")
+    org_ids = {org.id for org in org_res.organizations}
+    payer_ids = {payer.id for payer in org_res.payers}
+    plan_ids = {plan.id for plan in org_res.plans}
+    patient_ids = {p.id for p in patients}
+    patient_org_map = {p.id: p.organization_id for p in patients}
 
-    for pr in org_res.practitioners:
-        if pr.organization_id not in org_ids:
-            fk_errors.append(f"Practitioner '{pr.id}' references invalid organization '{pr.organization_id}'")
+    for fac in org_res.facilities:
+        if fac.organization_id not in org_ids:
+            fk_errors.append(f"Facility '{fac.id}' references nonexistent organization '{fac.organization_id}'")
 
-    for pl in org_res.plans:
-        if pl.payer_id not in payer_ids:
-            fk_errors.append(f"Plan '{pl.id}' references invalid payer '{pl.payer_id}'")
+    for prac in org_res.practitioners:
+        if prac.organization_id not in org_ids:
+            fk_errors.append(f"Practitioner '{prac.id}' references nonexistent organization '{prac.organization_id}'")
+
+    for plan in org_res.plans:
+        if plan.payer_id not in payer_ids:
+            fk_errors.append(f"PayerPlan '{plan.id}' references nonexistent payer '{plan.payer_id}'")
 
     for pat in patients:
         if pat.organization_id not in org_ids:
-            fk_errors.append(f"Patient '{pat.id}' references invalid organization '{pat.organization_id}'")
+            fk_errors.append(f"Patient '{pat.id}' references nonexistent organization '{pat.organization_id}'")
 
     for cov in coverages:
         if cov.patient_id not in patient_ids:
-            fk_errors.append(f"Coverage '{cov.id}' references invalid patient '{cov.patient_id}'")
+            fk_errors.append(f"Coverage '{cov.id}' references nonexistent patient '{cov.patient_id}'")
         if cov.payer_plan_id not in plan_ids:
-            fk_errors.append(f"Coverage '{cov.id}' references invalid plan '{cov.payer_plan_id}'")
+            fk_errors.append(f"Coverage '{cov.id}' references nonexistent plan '{cov.payer_plan_id}'")
 
     if fk_errors:
         report.errors.extend(fk_errors)
@@ -117,7 +151,7 @@ def validate_dataset(
         "error_count": len(fk_errors),
     }
 
-    # 3. Patient Partition Disjointness
+    # 3. Partition Disjointness
     train_dev_ids = {p.id for p in patients if p.split_group == "train_dev"}
     holdout_test_ids = {p.id for p in patients if p.split_group == "holdout_test"}
 
@@ -211,7 +245,6 @@ def validate_dataset(
             if enc.patient_id not in patient_ids:
                 clinical_errors.append(f"Encounter '{enc.id}' references nonexistent patient '{enc.patient_id}'")
 
-        # Check conditions
         for cond in clinical_res.conditions:
             enc = enc_by_id.get(cond.encounter_id)
             if not enc:
@@ -219,7 +252,6 @@ def validate_dataset(
             elif cond.patient_id != enc.patient_id:
                 clinical_errors.append(f"Condition '{cond.id}' patient_id != encounter patient_id (composite violation)")
 
-        # Check procedures
         for proc in clinical_res.procedures:
             enc = enc_by_id.get(proc.encounter_id)
             if not enc:
@@ -230,7 +262,6 @@ def validate_dataset(
                 if not (enc.start_time <= proc.performed_time <= enc.end_time):
                     clinical_errors.append(f"Procedure '{proc.id}' performed_time outside encounter period")
 
-        # Check observations
         for obs in clinical_res.observations:
             enc = enc_by_id.get(obs.encounter_id)
             if not enc:
@@ -238,7 +269,6 @@ def validate_dataset(
             elif obs.patient_id != enc.patient_id:
                 clinical_errors.append(f"Observation '{obs.id}' patient_id != encounter patient_id")
 
-        # Check clinical documents text hash & encounter linkage
         for doc in clinical_res.clinical_documents:
             enc = enc_by_id.get(doc.encounter_id)
             if not enc:
@@ -294,6 +324,148 @@ def validate_dataset(
             "expected_count": expected_fhir_count,
             "actual_count": actual_fhir_count,
             "error_count": len(fhir_errors),
+        }
+
+    # 9. Claims, Remittances, Authorizations & Denial Scenarios Validation
+    if claims_res:
+        claims_errors: list[str] = []
+        coverage_by_id = {c.id: c for c in coverages}
+        claim_by_id = {c.id: c for c in claims_res.claims}
+        claim_lines_by_claim: dict[Any, list] = {}
+        claim_line_by_id = {cl.id: cl for cl in claims_res.claim_lines}
+        remit_lines_by_remit: dict[Any, list] = {}
+        remit_line_by_id = {rl.id: rl for rl in claims_res.remittance_lines}
+        auth_by_id = {a.id: a for a in claims_res.authorizations}
+
+        for cl in claims_res.claim_lines:
+            claim_lines_by_claim.setdefault(cl.claim_id, []).append(cl)
+
+        for rl in claims_res.remittance_lines:
+            remit_lines_by_remit.setdefault(rl.remittance_id, []).append(rl)
+
+        # 9a. Claim Composite & Relationship Checks
+        for claim in claims_res.claims:
+            if claim.patient_id not in patient_ids:
+                claims_errors.append(f"Claim '{claim.id}' references nonexistent patient '{claim.patient_id}'")
+            elif claim.organization_id != patient_org_map.get(claim.patient_id):
+                claims_errors.append(f"Claim '{claim.id}' organization mismatch with patient organization")
+
+            cov = coverage_by_id.get(claim.coverage_id)
+            if not cov:
+                claims_errors.append(f"Claim '{claim.id}' references nonexistent coverage '{claim.coverage_id}'")
+            elif cov.patient_id != claim.patient_id:
+                claims_errors.append(f"Claim '{claim.id}' coverage patient does not match claim patient")
+
+            if claim.service_end_date < claim.service_start_date:
+                claims_errors.append(f"Claim '{claim.id}' service_end_date < service_start_date")
+
+            c_lines = claim_lines_by_claim.get(claim.id, [])
+            line_sum = sum(l.billed_amount for l in c_lines)
+            if claim.total_billed_amount != line_sum:
+                claims_errors.append(
+                    f"Claim '{claim.claim_number}' financial mismatch: total_billed={claim.total_billed_amount} != sum(lines)={line_sum}"
+                )
+
+        # 9b. Claim Diagnoses Invariants
+        for cd in claims_res.claim_diagnoses:
+            claim = claim_by_id.get(cd.claim_id)
+            if not claim:
+                claims_errors.append(f"ClaimDiagnosis '{cd.id}' references nonexistent claim '{cd.claim_id}'")
+            elif cd.patient_id != claim.patient_id:
+                claims_errors.append(f"ClaimDiagnosis '{cd.id}' patient_id != claim patient_id")
+
+            if not (1 <= cd.diagnosis_pointer <= 12):
+                claims_errors.append(f"ClaimDiagnosis '{cd.id}' diagnosis_pointer '{cd.diagnosis_pointer}' out of bounds [1, 12]")
+
+        # 9c. Claim Lines Invariants
+        for line in claims_res.claim_lines:
+            claim = claim_by_id.get(line.claim_id)
+            if not claim:
+                claims_errors.append(f"ClaimLine '{line.id}' references nonexistent claim '{line.claim_id}'")
+            if line.billed_amount < Decimal("0.00"):
+                claims_errors.append(f"ClaimLine '{line.id}' has negative billed_amount '{line.billed_amount}'")
+            if line.authorization_id:
+                auth = auth_by_id.get(line.authorization_id)
+                if not auth:
+                    claims_errors.append(f"ClaimLine '{line.id}' references nonexistent authorization '{line.authorization_id}'")
+
+        # 9d. Remittance & Remittance Line Reconciliation
+        for remit in claims_res.remittances:
+            r_lines = remit_lines_by_remit.get(remit.id, [])
+            paid_sum = sum(rl.paid_amount for rl in r_lines)
+            if remit.total_paid_amount != paid_sum:
+                claims_errors.append(
+                    f"Remittance '{remit.check_or_eft_number}' financial mismatch: total_paid={remit.total_paid_amount} != sum(lines)={paid_sum}"
+                )
+
+        for rl in claims_res.remittance_lines:
+            cline = claim_line_by_id.get(rl.claim_line_id)
+            if not cline:
+                claims_errors.append(f"RemittanceLine '{rl.id}' references nonexistent claim line '{rl.claim_line_id}'")
+                continue
+
+            if rl.allowed_amount < Decimal("0.00") or rl.paid_amount < Decimal("0.00"):
+                claims_errors.append(f"RemittanceLine '{rl.id}' has negative allowed or paid amount")
+
+            reconciled = rl.paid_amount + rl.adjustment_amount
+            if cline.billed_amount != reconciled:
+                claims_errors.append(
+                    f"RemittanceLine '{rl.id}' balance mismatch: line billed {cline.billed_amount} != paid {rl.paid_amount} + adj {rl.adjustment_amount}"
+                )
+
+        # 9e. Denial Events & 12 Authoritative Categories Coverage
+        categories_found = set()
+        for de in claims_res.denial_events:
+            categories_found.add(de.denial_category)
+            claim = claim_by_id.get(de.claim_id)
+            if not claim:
+                claims_errors.append(f"DenialEvent '{de.id}' references nonexistent claim '{de.claim_id}'")
+            if de.claim_line_id:
+                cline = claim_line_by_id.get(de.claim_line_id)
+                if not cline:
+                    claims_errors.append(f"DenialEvent '{de.id}' references nonexistent claim line '{de.claim_line_id}'")
+                elif cline.claim_id != de.claim_id:
+                    claims_errors.append(f"DenialEvent '{de.id}' claim_line_id does not belong to claim_id")
+
+            rl = remit_line_by_id.get(de.remittance_line_id)
+            if not rl:
+                claims_errors.append(f"DenialEvent '{de.id}' references nonexistent remittance line '{de.remittance_line_id}'")
+
+            if de.appeal_deadline < de.denial_date:
+                claims_errors.append(f"DenialEvent '{de.id}' appeal_deadline < denial_date")
+
+            if claim and de.denial_date < claim.service_start_date:
+                claims_errors.append(f"DenialEvent '{de.id}' denial_date < claim service_start_date")
+
+            if de.denied_amount < Decimal("0.00"):
+                claims_errors.append(f"DenialEvent '{de.id}' has negative denied_amount")
+
+        missing_categories = AUTHORITATIVE_DENIAL_CATEGORIES - categories_found
+        if missing_categories:
+            claims_errors.append(f"Missing required denial categories in generated dataset: {sorted(missing_categories)}")
+
+        partial_claims = [c for c in claims_res.claims if c.status == "PARTIALLY_DENIED"]
+        whole_denied_claims = [c for c in claims_res.claims if c.status == "DENIED"]
+        paid_claims = [c for c in claims_res.claims if c.status == "PAID"]
+
+        if not partial_claims:
+            claims_errors.append("Dataset lacks partially denied claims")
+        if not whole_denied_claims:
+            claims_errors.append("Dataset lacks whole-claim denied claims")
+        if not paid_claims:
+            claims_errors.append("Dataset lacks fully paid claims")
+
+        if claims_errors:
+            report.errors.extend(claims_errors)
+
+        report.checks["claims_and_denials_integrity"] = {
+            "valid": len(claims_errors) == 0,
+            "categories_covered": len(categories_found),
+            "all_12_categories_present": len(missing_categories) == 0,
+            "partial_denial_count": len(partial_claims),
+            "whole_claim_denial_count": len(whole_denied_claims),
+            "fully_paid_claim_count": len(paid_claims),
+            "error_count": len(claims_errors),
         }
 
     # Final verdict
