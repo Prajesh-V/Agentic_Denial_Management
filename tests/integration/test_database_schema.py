@@ -31,6 +31,7 @@ from backend.app.db.models import (
     Remittance,
     RemittanceLine,
     User,
+    UserRole,
 )
 from backend.app.db.session import SessionLocal
 
@@ -1163,7 +1164,7 @@ def test_export_human_approval_enforcement(db_session):
     db_session.add(unapproved_export)
     with pytest.raises((IntegrityError, ProgrammingError)) as exc_info:
         db_session.flush()
-    assert "Cannot export draft version without explicit authorized human approval" in str(exc_info.value)
+    assert "Cannot export draft version without authorized human approval by an active reviewer" in str(exc_info.value)
     db_session.rollback()
 
     # Re-fetch or recreate for positive test
@@ -1189,13 +1190,73 @@ def test_export_human_approval_enforcement(db_session):
     db_session.add(draft)
     db_session.flush()
 
-    # Add approval decision
+    # 2. Negative test: decision exists with APPROVE, but user only has 'analyst' role (not reviewer)
+    # Assign analyst role to entities['user']
+    db_session.execute(text("INSERT INTO roles (id, description) VALUES ('analyst', 'Analyst') ON CONFLICT DO NOTHING"))
+    db_session.execute(text("INSERT INTO roles (id, description) VALUES ('reviewer', 'Reviewer') ON CONFLICT DO NOTHING"))
+    user_analyst_role = UserRole(user_id=entities["user"].id, role_id="analyst")
+    db_session.add(user_analyst_role)
+    db_session.flush()
+
+    decision_by_analyst = AppealDecision(
+        appeal_id=appeal.id,
+        draft_version_id=draft.id,
+        reviewer_user_id=entities["user"].id,
+        decision="APPROVE",
+        rationale="Analyst approved without reviewer role",
+    )
+    db_session.add(decision_by_analyst)
+    db_session.flush()
+
+    export_analyst = Export(
+        appeal_id=appeal.id,
+        draft_version_id=draft.id,
+        exported_by_user_id=entities["user"].id,
+        export_format="PDF",
+        file_path="/exports/draft1.pdf",
+        file_hash="hash_pdf",
+    )
+    db_session.add(export_analyst)
+    with pytest.raises((IntegrityError, ProgrammingError)) as exc_info:
+        db_session.flush()
+    assert "Cannot export draft version without authorized human approval by an active reviewer" in str(exc_info.value)
+    db_session.rollback()
+
+    # Re-fetch or recreate for positive test with active reviewer role
+    entities = create_base_entities(db_session)
+    claim = Claim(claim_number=f"CLM-EXP-OK-{uid}", patient_id=entities["pat"].id, organization_id=entities["org"].id, coverage_id=entities["cov"].id, rendering_practitioner_id=entities["prac"].id, facility_id=entities["fac"].id, status="NEW", service_start_date=date(2025, 5, 1), service_end_date=date(2025, 5, 1), submission_date=now, total_billed_amount=Decimal("500.00"), currency="USD")
+    db_session.add(claim)
+    db_session.flush()
+    cl = ClaimLine(claim_id=claim.id, line_number=1, service_code="99214", billed_amount=Decimal("500.00"), service_date=date(2025, 5, 1))
+    db_session.add(cl)
+    remit = Remittance(payer_id=entities["payer"].id, check_or_eft_number=f"EFT-OK-{uid}", remittance_date=date(2025, 5, 15), total_paid_amount=Decimal("0.00"))
+    db_session.add(remit)
+    db_session.flush()
+    rl = RemittanceLine(remittance_id=remit.id, claim_line_id=cl.id, allowed_amount=Decimal("0.00"), paid_amount=Decimal("0.00"), adjustment_amount=Decimal("500.00"))
+    db_session.add(rl)
+    db_session.flush()
+    denial = DenialEvent(claim_id=claim.id, claim_line_id=cl.id, remittance_line_id=rl.id, denial_category="MEDICAL_NECESSITY", carc_code="50", denial_reason_text="Not medically necessary", denied_amount=Decimal("500.00"), denial_date=date(2025, 5, 15), appeal_deadline=date(2025, 7, 15))
+    db_session.add(denial)
+    db_session.flush()
+    appeal = Appeal(claim_id=claim.id, denial_event_id=denial.id, appeal_level=1, status="DRAFTING", filing_deadline=date(2025, 7, 15))
+    db_session.add(appeal)
+    db_session.flush()
+    draft = AppealDraftVersion(appeal_id=appeal.id, version_number=1, author_type="AGENT", subject_line="Draft for Export", body_text="Export body text", text_hash="hash_export_draft_ok")
+    db_session.add(draft)
+    db_session.flush()
+
+    # Assign authorized 'reviewer' role to entities['user']
+    db_session.execute(text("INSERT INTO roles (id, description) VALUES ('reviewer', 'Reviewer') ON CONFLICT DO NOTHING"))
+    user_reviewer_role = UserRole(user_id=entities["user"].id, role_id="reviewer")
+    db_session.add(user_reviewer_role)
+    db_session.flush()
+
     decision = AppealDecision(
         appeal_id=appeal.id,
         draft_version_id=draft.id,
         reviewer_user_id=entities["user"].id,
         decision="APPROVE",
-        rationale="Analyst reviewed and approved draft",
+        rationale="Supervisory reviewer authorized approval",
     )
     db_session.add(decision)
     db_session.flush()
