@@ -186,6 +186,7 @@ class EvidenceChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("source_resource_id", "chunker_version", "chunk_index", name="uq_evidence_chunk_source_version_idx"),
         Index("ix_evidence_chunk_active_source", "source_resource_id", "chunk_index", unique=True, postgresql_where=text("is_active = TRUE")),
+        Index("ix_evidence_chunks_content_fts", text("to_tsvector('english', content)"), postgresql_using="gin"),
         ForeignKeyConstraint(
             ["clinical_document_id", "patient_id"],
             ["clinical_documents.id", "clinical_documents.patient_id"],

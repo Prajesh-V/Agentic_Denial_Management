@@ -162,3 +162,22 @@ To prevent cross-patient or cross-tenant foreign key leakage:
     - `DENIAL_CONTEXT`: `patient_id IS NOT NULL AND claim_id IS NOT NULL AND denial_event_id IS NOT NULL AND payer_policy_version_id IS NULL`.
   - Uniqueness & Supersession: `uq_evidence_chunk_source_version_idx` on `(source_resource_id, chunker_version, chunk_index)` and partial unique index `ix_evidence_chunk_active_source` on `(source_resource_id, chunk_index) WHERE is_active = TRUE`.
   - Zero Patient Leakage: All clinical composite foreign keys (`fk_chunk_clinical_doc_patient`, `fk_chunk_diag_report_patient`, etc.) and claim foreign keys (`fk_chunk_claim_patient`, `fk_chunk_denial_claim`) remain strictly enforced by PostgreSQL.
+
+---
+
+## ADR-008: PostgreSQL GIN Expression Index for Lexical Full-Text Search
+
+- **Date:** 2026-10-13
+- **Status:** **ACCEPTED**
+- **Context:**
+  Phase 7 requires implementing sparse lexical retrieval alongside dense semantic vector retrieval (`BAAI/bge-small-en-v1.5` + `faiss-cpu`) over canonical `evidence_chunks.content`. Lexical queries must match medical terminology, clinical procedure codes, ICD-10 diagnosis codes (e.g., `E11.9`), CPT codes (e.g., `99213`), and payer denial reasons (e.g., `PR-204`, `CO-16`, `N115`) while enforcing strict patient and payer scoping.
+- **Decision:**
+  Create a PostgreSQL GIN expression index on `to_tsvector('english', content)` named `ix_evidence_chunks_content_fts` via forward Alembic migration `9e01fee8d001_add_evidence_chunks_fts_index.py`.
+- **Alternatives Considered:**
+  1. *External Search Service (Elasticsearch / Meilisearch):* Rejected. Violates the local zero-external-dependency requirement and introduces secondary index synchronization overhead.
+  2. *Dedicated `tsvector` Column:* Rejected. Increases table storage and write amplification when an expression GIN index achieves the identical query plan.
+  3. *PostgreSQL GIN Expression Index (Chosen):* Preserves the strict 40-table architectural invariant (`test_models.py`), requires zero table storage modifications, and leverages PostgreSQL native `to_tsquery` and `ts_rank` ranking functions with parameterized SQL.
+- **Integrity & Scoping:**
+  - Lexical queries apply parameterized scope filters (`patient_id`, `payer_id`, `claim_id`, `evidentiary_role`, `is_active = TRUE`) directly in SQL.
+  - Zero cross-patient leakage: clinical documents are query-restricted to the authorized patient ID.
+  - Forward migration `9e01fee8d001` passed complete downgrade and upgrade lifecycle tests.
