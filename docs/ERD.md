@@ -65,6 +65,7 @@ erDiagram
     COVERAGE ||--o{ CLAIMS : primary_for
     AUTHORIZATIONS ||--o{ CLAIM_LINES : references
 
+    CLAIMS ||--o{ CLAIM_DIAGNOSES : diagnoses
     CLAIMS ||--o{ CLAIM_LINES : contains
     SERVICE_CODES ||--o{ CLAIM_LINES : codes
     CLAIMS ||--o{ REMITTANCE_LINES : adjudicated_in
@@ -344,6 +345,20 @@ Header-level health insurance billing claim (837I/837P inspired).
 - `currency` (VARCHAR(3), NOT NULL, DEFAULT 'USD').
 - *Constraint:* CHECK(`service_end_date` >= `service_start_date`).
 - *Constraint:* CHECK(`total_billed_amount` >= 0).
+
+
+#### `claim_diagnoses`
+Header-level diagnoses associated with a claim (Box 21 diagnosis pointers 1..12).
+- `id` (UUID, PK): Unique claim diagnosis ID.
+- `claim_id` (UUID, FK -> `claims.id`, NOT NULL): Parent claim.
+- `diagnosis_pointer` (INT, NOT NULL): Diagnosis pointer sequence (1 to 12).
+- `condition_id` (UUID, FK -> `conditions.id`, NULL): Optional link to clinical condition.
+- `diagnosis_code` (VARCHAR(20), NOT NULL): ICD-10 diagnosis code string.
+- `code_system` (VARCHAR(50), NOT NULL, DEFAULT 'ICD-10-CM'): Coding system.
+- `description` (VARCHAR(255), NULL): Diagnosis description.
+- `is_primary` (BOOLEAN, NOT NULL, DEFAULT FALSE): Primary diagnosis flag.
+- *Constraint:* UNIQUE(`claim_id`, `diagnosis_pointer`).
+- *Constraint:* CHECK(`diagnosis_pointer` >= 1 AND `diagnosis_pointer` <= 12).
 
 #### `claim_lines`
 Specific billable service lines within a claim.

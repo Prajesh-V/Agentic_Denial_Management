@@ -107,3 +107,44 @@ All PostgreSQL schema changes must be authored as version-controlled Alembic mig
 - Zero manual DDL execution (`CREATE TABLE`, `ALTER TABLE`) directly against the database.
 - Every migration must provide both a robust `upgrade()` and a clean `downgrade()` function.
 - Test suites must execute migration rollback and upgrade cycles against a fresh database container to verify reproducibility.
+
+---
+
+## 9. Phase 2 Architectural & Consistency Reconciliations
+
+Prior to SQLAlchemy model and Alembic migration implementation, the following 7 consistency issues were audited and resolved:
+
+### 9.1 Authoritative Table Inventory Reconciliation (40 Tables)
+The initial Phase 1 summary referenced 32 tables as an informal grouping. The exhaustive, authoritative table inventory consists of **40 relational tables** across four core domains:
+1. **Identity, Organization & Access (8):** `organizations`, `facilities`, `practitioners`, `users`, `roles`, `user_roles`, `organization_memberships`, `patients`.
+2. **Clinical Records & FHIR (8):** `encounters`, `conditions`, `procedures`, `observations`, `medication_requests`, `diagnostic_reports`, `clinical_documents`, `fhir_resources`.
+3. **Insurance, Claims & Denials (16):** `payers`, `payer_plans`, `coverage`, `service_codes`, `authorizations`, `claims`, `claim_diagnoses`, `claim_lines`, `remittances`, `remittance_lines`, `denial_events`, `payer_policy_versions`, `appeals`, `appeal_draft_versions`, `appeal_decisions`, `exports`.
+4. **Investigation, Retrieval, Evaluation & Audit (8):** `investigation_runs`, `retrieval_attempts`, `evidence_chunks`, `evidence_assessments`, `ground_truth_labels`, `audit_events`, `dataset_builds`, `index_builds`.
+
+### 9.2 Claim Diagnoses Table (`claim_diagnoses`)
+To resolve `claim_lines.diagnosis_pointers` into a normalized, enforceable relationship, the `claim_diagnoses` table is introduced:
+- Stores diagnosis pointers 1 through 12 matching standard CMS-1500 Box 21 / 837 claim header standards.
+- Links `claim_id` to `diagnosis_code` and optional `condition_id`.
+- Enforces `UNIQUE(claim_id, diagnosis_pointer)`.
+
+### 9.3 Service Code Integrity & Surrogate Identification
+`service_codes` possesses surrogate primary key `id` (UUID) with `UNIQUE(system, code)`. Foreign references (`claim_lines.service_code_id`, `authorizations.service_code_id`) link directly to `service_codes.id`, eliminating composite key ambiguity while preserving standard code strings for display.
+
+### 9.4 Polymorphic Evidence Provenance Enforcement
+`evidence_chunks` supports polymorphic clinical sources while enforcing relational integrity via explicit nullable foreign keys:
+- `clinical_document_id` (FK -> `clinical_documents.id`)
+- `diagnostic_report_id` (FK -> `diagnostic_reports.id`)
+- `observation_id` (FK -> `observations.id`)
+- `encounter_id` (FK -> `encounters.id`)
+- `condition_id` (FK -> `conditions.id`)
+- `procedure_id` (FK -> `procedures.id`)
+- `fhir_resource_id` (FK -> `fhir_resources.id`)
+- Database `CHECK` constraint guarantees at least one canonical source foreign key is non-null.
+
+### 9.5 Database-Level Tenant & Patient Isolation Invariants
+To prevent cross-patient or cross-tenant foreign key leakage:
+- `patients` has `UNIQUE(id, organization_id)`.
+- `claims` enforces composite foreign key `FOREIGN KEY (patient_id, organization_id) REFERENCES patients(id, organization_id)`.
+- `encounters` has `UNIQUE(id, patient_id)`.
+- Child clinical records (`conditions`, `procedures`, `observations`, `medication_requests`, `diagnostic_reports`, `clinical_documents`) enforce composite foreign key `FOREIGN KEY (encounter_id, patient_id) REFERENCES encounters(id, patient_id)`.
+- Database engine blocks cross-patient associations at commit time.
