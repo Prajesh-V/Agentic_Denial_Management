@@ -1,0 +1,24 @@
+services:
+  denial-postgres:
+    image: postgres:18
+    container_name: denial-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-denial_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_dev_only_change_this_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-denial_management}
+      PGDATA: /var/lib/postgresql/18/docker
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - denial_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  denial_pgdata:
+    name: denial_pgdata
